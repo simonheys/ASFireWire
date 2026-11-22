@@ -109,15 +109,17 @@ void ROMScanSession::Start(ROMScanRequest request, ScanCompletionCallback comple
                 if (node.physicalId == session->localNodeId_) {
                     continue;
                 }
-                if (!node.linkActive) {
-                    continue;
-                }
+                // Apple IOFireWireController.cpp:2537-2558 probes every remote
+                // node. Some devices answer Config ROM reads with L=0.
                 session->nodeScans_.emplace_back(node.physicalId, session->gen_,
                                                  FwSpeed::S100,
-                                                 session->params_.perStepRetries);
+                                                 session->params_.perStepRetries,
+                                                 !node.linkActive);
                 session->nodeScans_.back().SetConfigROMReadyRetriesLeft(
                     session->params_.configROMReadyRetries);
             }
+            std::stable_partition(session->nodeScans_.begin(), session->nodeScans_.end(),
+                                  [](const auto& node) { return !node.IsInactiveLinkProbe(); });
         } else {
             auto targets = std::move(request.targetNodes);
             std::ranges::sort(targets);
@@ -386,7 +388,10 @@ void ROMScanSession::RetryWithFallback(ROMScanNodeStateMachine& node) {
 }
 
 bool ROMScanSession::IsRootNode(uint8_t nodeId) const noexcept {
-    return topology_.rootNodeId != Driver::kInvalidPhysicalId && topology_.rootNodeId == nodeId;
+    return topology_.rootNodeId != Driver::kInvalidPhysicalId && topology_.rootNodeId == nodeId &&
+           std::ranges::none_of(nodeScans_, [nodeId](const auto& node) {
+               return node.NodeId() == nodeId && node.IsInactiveLinkProbe();
+           });
 }
 
 void ROMScanSession::NotifyRootBIBPending(uint8_t nodeId) {
@@ -484,6 +489,17 @@ void ROMScanSession::HandleBIBComplete(uint8_t nodeId, ROMReader::ReadResult res
     auto& node = *nodePtr;
     node.SetBIBInProgress(false);
 
+    const bool zeroHeader = !result.quadletsBE.empty() && result.quadletsBE[0] == 0;
+    // A repeater can time out on q0. Stop the speculative probe without
+    // scheduling retries or treating the whole bus as busy.
+    if (node.IsInactiveLinkProbe() && node.ROM().rawQuadlets.empty() &&
+        (!result.success || zeroHeader)) {
+        (void)TransitionNodeState(node, ROMScanNodeStateMachine::State::Failed,
+                                 "inactive-link BIB probe did not respond");
+        Pump();
+        return;
+    }
+
     if (!result.success) {
         LogBIBReadFailed(nodeId);
         hadBusyNodes_ = true;
@@ -500,7 +516,7 @@ void ROMScanSession::HandleBIBComplete(uint8_t nodeId, ROMReader::ReadResult res
     }
 
     // IEEE 1212 allows temporary zero in header while device is still booting.
-    if (!result.quadletsBE.empty() && result.quadletsBE[0] == 0) {
+    if (zeroHeader) {
         LogBIBBootingRetry(nodeId);
         hadBusyNodes_ = true;
         if (ShouldDelayConfigROMReadyRetry(node)) {
@@ -628,7 +644,8 @@ void ROMScanSession::FinishSpeedSelection(ROMScanNodeStateMachine& node) {
 }
 
 void ROMScanSession::ContinueAfterBIBSuccess(ROMScanNodeStateMachine& node, uint8_t nodeId) {
-    if (params_.doIRMCheck && topology_.irmNodeId != Driver::kInvalidPhysicalId && topology_.irmNodeId == nodeId &&
+    if (!node.IsInactiveLinkProbe() && params_.doIRMCheck &&
+        topology_.irmNodeId != Driver::kInvalidPhysicalId && topology_.irmNodeId == nodeId &&
         node.ROM().bib.irmc) {
         StartIRMRead(node);
         return;

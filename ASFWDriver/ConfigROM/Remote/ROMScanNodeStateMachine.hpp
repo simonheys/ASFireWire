@@ -22,8 +22,10 @@ class ROMScanNodeStateMachine {
 
     ROMScanNodeStateMachine() = default;
 
-    ROMScanNodeStateMachine(uint8_t nodeIdIn, Generation generation, FwSpeed speed, uint8_t retries)
-        : nodeId_(nodeIdIn), currentSpeed_(speed), retriesLeft_(retries) {
+    ROMScanNodeStateMachine(uint8_t nodeIdIn, Generation generation, FwSpeed speed, uint8_t retries,
+                            bool probeInactiveLink = false)
+        : nodeId_(nodeIdIn), currentSpeed_(speed), retriesLeft_(retries),
+          probeInactiveLink_(probeInactiveLink) {
         partialROM_.gen = generation;
         partialROM_.nodeId = nodeIdIn;
     }
@@ -37,6 +39,7 @@ class ROMScanNodeStateMachine {
     [[nodiscard]] FwSpeed CurrentSpeed() const { return currentSpeed_; }
     [[nodiscard]] uint8_t RetriesLeft() const { return retriesLeft_; }
     [[nodiscard]] uint8_t ConfigROMReadyRetriesLeft() const { return configROMReadyRetriesLeft_; }
+    [[nodiscard]] bool IsInactiveLinkProbe() const { return probeInactiveLink_; }
 
     void SetCurrentSpeed(FwSpeed speed) { currentSpeed_ = speed; }
     void SetRetriesLeft(uint8_t retries) { retriesLeft_ = retries; }
@@ -139,6 +142,7 @@ class ROMScanNodeStateMachine {
         irmBitBucket_ = 0xFFFFFFFF;
         bibInProgress_ = false;
         configROMReadyRetriesLeft_ = 0;
+        probeInactiveLink_ = false;
     }
 
   private:
@@ -157,6 +161,7 @@ class ROMScanNodeStateMachine {
 
     bool bibInProgress_{false};
     uint8_t configROMReadyRetriesLeft_{0};
+    bool probeInactiveLink_{false};
 };
 
 } // namespace ASFW::Discovery
