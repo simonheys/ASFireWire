@@ -215,7 +215,9 @@ std::vector<uint32_t> CreateFullBIBWithCMC(bool cmc) {
 
 } // anonymous namespace
 
-TEST(ROMScannerCompletion, AutomaticScanDiscoversResponsiveLinkInactiveNode) {
+class ROMScannerInactiveLinkStartup : public ::testing::TestWithParam<bool> {};
+
+TEST_P(ROMScannerInactiveLinkStartup, AutomaticScanDiscoversRespondingNodeAfterReadinessRetry) {
     MockAsyncSubsystem mockAsync;
     SpeedPolicy speedPolicy;
     ROMScannerParams params{};
@@ -235,7 +237,7 @@ TEST(ROMScannerCompletion, AutomaticScanDiscoversResponsiveLinkInactiveNode) {
 
     std::vector<ConfigROM> completedROMs;
     ASSERT_TRUE(scanner.Start(request, [&](Generation, std::vector<ConfigROM> roms, bool busy) {
-        EXPECT_FALSE(busy);
+        EXPECT_TRUE(busy);
         completedROMs = std::move(roms);
     }));
     mockAsync.WaitForPendingReads(1);
@@ -244,15 +246,32 @@ TEST(ROMScannerCompletion, AutomaticScanDiscoversResponsiveLinkInactiveNode) {
     // Mini-DAC bus options with a synthetic GUID.
     auto bib = CreateFullBIB();
     bib[2] = 0xF0648122;
+
+    // Either a zero header or a later quadlet timeout proves q0 answered.
+    const bool timeoutAfterHeader = GetParam();
+    mockAsync.SimulateReadSuccess(0, {timeoutAfterHeader ? bib[0] : 0u});
+    if (timeoutAfterHeader) {
+        ASSERT_EQ(mockAsync.GetPendingReadCount(), 2u);
+        mockAsync.SimulateReadTimeout(1);
+    }
+    const size_t retryIndex = timeoutAfterHeader ? 2u : 1u;
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), retryIndex + 1u);
+    mockAsync.SimulateReadTimeout(retryIndex);
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), retryIndex + 2u);
+
     mockAsync.SimulateFullBIBSuccess(bib);
-    mockAsync.WaitForPendingReads(5);
-    ASSERT_EQ(mockAsync.GetPendingReadCount(), 5u);
-    mockAsync.SimulateReadSuccess(4, {0x00000000}); // Empty root directory fixture.
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), retryIndex + 6u);
+    mockAsync.SimulateReadSuccess(retryIndex + 5u, {0x00000000}); // Empty root directory fixture.
 
     ASSERT_EQ(completedROMs.size(), 1u);
     EXPECT_EQ(completedROMs.front().nodeId, 0u);
     EXPECT_EQ(completedROMs.front().bib.guid, 0x0123456789ABCDEFULL);
 }
+
+INSTANTIATE_TEST_SUITE_P(LinkInactiveReadiness, ROMScannerInactiveLinkStartup, ::testing::Bool(),
+                         [](const auto& info) {
+                             return info.param ? "TimeoutAfterHeader" : "ZeroHeader";
+                         });
 
 TEST(ROMScannerCompletion, AutomaticScanDoesNotRetryUnresponsiveLinkInactiveNode) {
     MockAsyncSubsystem mockAsync;

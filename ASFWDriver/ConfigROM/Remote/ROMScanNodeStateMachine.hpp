@@ -41,6 +41,7 @@ class ROMScanNodeStateMachine {
     [[nodiscard]] uint8_t ConfigROMReadyRetriesLeft() const { return configROMReadyRetriesLeft_; }
     [[nodiscard]] bool IsInactiveLinkProbe() const { return probeInactiveLink_; }
 
+    void ConfirmBIBResponse() { probeInactiveLink_ = false; }
     void SetCurrentSpeed(FwSpeed speed) { currentSpeed_ = speed; }
     void SetRetriesLeft(uint8_t retries) { retriesLeft_ = retries; }
     void InitializeRootDirRetries(uint8_t retries) {
