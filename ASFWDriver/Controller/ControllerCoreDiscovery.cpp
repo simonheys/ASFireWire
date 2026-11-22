@@ -262,10 +262,10 @@ void ControllerCore::OnTopologyReady(const TopologySnapshot& snap) {
     }
     BeginRootCapabilityEvidence(snap, localNodeId);
 
-    // Count how many nodes will actually be scanned (exclude local + link-inactive)
+    // Discovery also gives link-inactive remote nodes a bounded ROM probe.
     uint32_t scannableCount = 0;
     for (const auto& node : snap.physical.nodes) {
-        if (node.physicalId != localNodeId && node.linkActive) {
+        if (node.physicalId != localNodeId) {
             scannableCount++;
         }
     }

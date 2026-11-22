@@ -105,19 +105,25 @@ void ROMScanSession::Start(ROMScanRequest request, ScanCompletionCallback comple
         session->rootProbeTerminal_ = false;
 
         if (request.targetNodes.empty()) {
+            // Apple IOFireWireController.cpp:2537-2558 probes every remote
+            // node. Some devices answer Config ROM reads with L=0.
             for (const auto& node : session->topology_.physical.nodes) {
                 if (node.physicalId == session->localNodeId_) {
                     continue;
                 }
-                if (!node.linkActive) {
-                    continue;
+                if (!node.linkActive && node.physicalId == session->topology_.rootNodeId) {
+                    // Probe its ROM without changing the bus role policy.
+                    session->rootCapabilityCallback_ = nullptr;
                 }
                 session->nodeScans_.emplace_back(node.physicalId, session->gen_,
                                                  FwSpeed::S100,
-                                                 session->params_.perStepRetries);
+                                                 session->params_.perStepRetries,
+                                                 !node.linkActive);
                 session->nodeScans_.back().SetConfigROMReadyRetriesLeft(
                     session->params_.configROMReadyRetries);
             }
+            std::ranges::stable_partition(session->nodeScans_,
+                                          [](const auto& node) { return !node.IsInactiveLinkProbe(); });
         } else {
             auto targets = std::move(request.targetNodes);
             std::ranges::sort(targets);
@@ -483,6 +489,19 @@ void ROMScanSession::HandleBIBComplete(uint8_t nodeId, ROMReader::ReadResult res
 
     auto& node = *nodePtr;
     node.SetBIBInProgress(false);
+
+    if (node.IsInactiveLinkProbe()) {
+        // A zero header, busy acknowledgment, or failure after q0 means the
+        // node replied. Preserve the normal readiness retries in those cases.
+        if (!result.success && result.address == FW::ConfigROMAddr::kAddressLo &&
+            result.status != Async::AsyncStatus::kBusyRetryExhausted) {
+            (void)TransitionNodeState(node, ROMScanNodeStateMachine::State::Failed,
+                                     "inactive-link BIB probe did not respond");
+            Pump();
+            return;
+        }
+        node.ConfirmBIBResponse();
+    }
 
     if (!result.success) {
         LogBIBReadFailed(nodeId);

@@ -215,6 +215,99 @@ std::vector<uint32_t> CreateFullBIBWithCMC(bool cmc) {
 
 } // anonymous namespace
 
+class ROMScannerInactiveLinkStartup : public ::testing::TestWithParam<bool> {};
+
+TEST_P(ROMScannerInactiveLinkStartup, AutomaticScanDiscoversRespondingNodeAfterReadinessRetry) {
+    MockAsyncSubsystem mockAsync;
+    SpeedPolicy speedPolicy;
+    ROMScannerParams params{};
+    params.doIRMCheck = false;
+    params.startSpeed = FwSpeed::S100;
+    ROMScanner scanner(mockAsync, speedPolicy, params);
+
+    ROMScanRequest request{};
+    request.gen = Generation{3};
+    request.topology.generation = 3;
+    request.topology.rootNodeId = 1;
+    request.topology.physical.nodes = {
+        {.physicalId = 0, .linkActive = false},
+        {.physicalId = 1, .linkActive = true},
+    };
+    request.localNodeId = 1;
+
+    std::vector<ConfigROM> completedROMs;
+    ASSERT_TRUE(scanner.Start(request, [&](Generation, std::vector<ConfigROM> roms, bool busy) {
+        EXPECT_TRUE(busy);
+        completedROMs = std::move(roms);
+    }));
+    mockAsync.WaitForPendingReads(1);
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), 1u);
+
+    // Mini-DAC bus options with a synthetic GUID.
+    auto bib = CreateFullBIB();
+    bib[2] = 0xF0648122;
+
+    // Either a zero header or a later quadlet timeout proves q0 answered.
+    const bool timeoutAfterHeader = GetParam();
+    mockAsync.SimulateReadSuccess(0, {timeoutAfterHeader ? bib[0] : 0u});
+    if (timeoutAfterHeader) {
+        ASSERT_EQ(mockAsync.GetPendingReadCount(), 2u);
+        mockAsync.SimulateReadTimeout(1);
+    }
+    const size_t retryIndex = timeoutAfterHeader ? 2u : 1u;
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), retryIndex + 1u);
+    mockAsync.SimulateReadTimeout(retryIndex);
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), retryIndex + 2u);
+
+    mockAsync.SimulateFullBIBSuccess(bib);
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), retryIndex + 6u);
+    mockAsync.SimulateReadSuccess(retryIndex + 5u, {0x00000000}); // Empty root directory fixture.
+
+    ASSERT_EQ(completedROMs.size(), 1u);
+    EXPECT_EQ(completedROMs.front().nodeId, 0u);
+    EXPECT_EQ(completedROMs.front().bib.guid, 0x0123456789ABCDEFULL);
+}
+
+INSTANTIATE_TEST_SUITE_P(LinkInactiveReadiness, ROMScannerInactiveLinkStartup, ::testing::Bool(),
+                         [](const auto& info) {
+                             return info.param ? "TimeoutAfterHeader" : "ZeroHeader";
+                         });
+
+TEST(ROMScannerCompletion, AutomaticScanDoesNotRetryUnresponsiveLinkInactiveNode) {
+    MockAsyncSubsystem mockAsync;
+    SpeedPolicy speedPolicy;
+    ROMScannerParams params{};
+    params.perStepRetries = 2;
+    params.configROMReadyRetries = 2;
+    ROMScanner scanner(mockAsync, speedPolicy, params);
+
+    ROMScanRequest request{};
+    request.gen = Generation{3};
+    request.topology.generation = 3;
+    request.topology.rootNodeId = 1;
+    request.topology.physical.nodes = {
+        {.physicalId = 0, .linkActive = true},
+        {.physicalId = 1, .linkActive = false},
+    };
+    request.localNodeId = 0;
+    request.rootCapabilityCallback = [](RootCapabilityEvidence) {
+        ADD_FAILURE() << "A speculative ROM probe must not change bus role evidence";
+    };
+
+    bool completed = false;
+    ASSERT_TRUE(scanner.Start(request, [&](Generation, std::vector<ConfigROM> roms, bool busy) {
+        EXPECT_TRUE(roms.empty());
+        EXPECT_FALSE(busy);
+        completed = true;
+    }));
+    mockAsync.WaitForPendingReads(1);
+    ASSERT_EQ(mockAsync.GetPendingReadCount(), 1u);
+    mockAsync.SimulateReadTimeout(0);
+
+    EXPECT_TRUE(completed);
+    EXPECT_EQ(mockAsync.GetPendingReadCount(), 1u);
+}
+
 // ============================================================================
 // Manual Read Completion Tests
 // ============================================================================

@@ -39,7 +39,7 @@ struct ROMScanRequest {
     Driver::TopologySnapshot topology;
     uint8_t localNodeId{0xFF};
 
-    // If empty: scan all remote nodes (excluding local node, and skipping link-inactive nodes).
+    // If empty: scan remote nodes, skipping further retries when an inactive link does not reply.
     // If non-empty: scan only these node IDs (local node is always skipped).
     std::vector<uint8_t> targetNodes;
 

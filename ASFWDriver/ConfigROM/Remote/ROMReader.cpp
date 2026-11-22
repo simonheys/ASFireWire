@@ -315,7 +315,7 @@ void ROMReader::ReadBIB(uint8_t nodeId, Generation generation, FwSpeed speed,
                         out.success = false;
                         out.nodeId = nodeId;
                         out.generation = generation;
-                        out.address = FW::ConfigROMAddr::kAddressLo;
+                        out.address = q2N.address;
                         out.status = q2N.status;
                         (*completionHolder)(std::move(out));
                         return;
